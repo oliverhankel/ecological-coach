@@ -106,6 +106,9 @@ jobs:
             ~/.ssh/known_hosts
 
           chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y \
+            -f ~/.ssh/id_ed25519 \
+            >/dev/null
 
           ssh-keygen \
             -F "$IONOS_HOST" \
@@ -113,10 +116,12 @@ jobs:
             >/dev/null
 
           ssh \
-            -o BatchMode=yes \
-            -o ConnectTimeout=15 \
-            "$IONOS_USER@$IONOS_HOST" \
-            'echo "SSH connection successful"'
+             -o BatchMode=yes \
+             -o IdentitiesOnly=yes \
+             -o ConnectTimeout=15 \
+             -i ~/.ssh/id_ed25519 \
+             "$IONOS_USER@$IONOS_HOST" \
+             'echo "SSH connection successful"'
 
       - name: Prepare server
         if: github.event_name == 'push'
