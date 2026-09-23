@@ -7,19 +7,25 @@ on:
       - main
 
 concurrency:
-  group: production-deployment
+  group: ionos-production
   cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  COMPOSER_NO_INTERACTION: 1
+  COMPOSER_PROCESS_TIMEOUT: 0
 
 jobs:
   test-and-deploy:
+    name: Test and deploy
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v7
 
       - name: Configure PHP
         uses: shivammathur/setup-php@v2
@@ -27,9 +33,10 @@ jobs:
           php-version: "8.4"
           coverage: none
           tools: composer:v2
+          extensions: mbstring, pdo_sqlite, pdo_mysql
 
-      - name: Configure Node
-        uses: actions/setup-node@v4
+      - name: Configure Node.js
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -41,19 +48,31 @@ jobs:
         run: |
           cp .env.example .env
           php artisan key:generate
-          touch database/database.sqlite
-
-      - name: Run tests
-        env:
-          DB_CONNECTION: sqlite
-          DB_DATABASE: database/database.sqlite
-        run: php artisan test
 
       - name: Install frontend dependencies
         run: npm ci
 
       - name: Build frontend
         run: npm run build
+
+      - name: Run tests
+        env:
+          APP_ENV: testing
+          APP_DEBUG: "true"
+          DB_CONNECTION: sqlite
+          DB_DATABASE: ":memory:"
+          SESSION_DRIVER: array
+          CACHE_STORE: array
+          QUEUE_CONNECTION: sync
+          MAIL_MAILER: array
+        run: php artisan test
+
+      - name: Show Laravel log after test failure
+        if: failure()
+        run: |
+          if [ -f storage/logs/laravel.log ]; then
+            tail -n 200 storage/logs/laravel.log
+          fi
 
       - name: Prepare production dependencies
         if: github.event_name == 'push'
@@ -68,15 +87,38 @@ jobs:
         if: github.event_name == 'push'
         env:
           SSH_PRIVATE_KEY: ${{ secrets.IONOS_SSH_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.IONOS_KNOWN_HOSTS }}
+          IONOS_HOST: ${{ secrets.IONOS_HOST }}
+          IONOS_USER: ${{ secrets.IONOS_USER }}
         run: |
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/id_ed25519
-          chmod 644 ~/.ssh/known_hosts
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$IONOS_HOST"
+          test -n "$IONOS_USER"
+          test -s .github/ionos_known_hosts
 
-      - name: Prepare server and enable maintenance mode
+          install -d -m 700 ~/.ssh
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" \
+            | tr -d '\r' \
+            > ~/.ssh/id_ed25519
+
+          install -m 644 \
+            .github/ionos_known_hosts \
+            ~/.ssh/known_hosts
+
+          chmod 600 ~/.ssh/id_ed25519
+
+          ssh-keygen \
+            -F "$IONOS_HOST" \
+            -f ~/.ssh/known_hosts \
+            >/dev/null
+
+          ssh \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            "$IONOS_USER@$IONOS_HOST" \
+            'echo "SSH connection successful"'
+
+      - name: Prepare server
         if: github.event_name == 'push'
         env:
           IONOS_HOST: ${{ secrets.IONOS_HOST }}
@@ -84,14 +126,19 @@ jobs:
           DEPLOY_PATH: ${{ secrets.IONOS_DEPLOY_PATH }}
           PHP_BIN: ${{ vars.IONOS_PHP_BIN }}
         run: |
-          ssh "$IONOS_USER@$IONOS_HOST" \
+          test -n "$DEPLOY_PATH"
+          test -n "$PHP_BIN"
+
+          ssh \
+            "$IONOS_USER@$IONOS_HOST" \
             bash -s -- "$DEPLOY_PATH" "$PHP_BIN" <<'REMOTE'
           set -e
+
           deploy_path="$1"
           php_bin="$2"
 
           mkdir -p \
-            "$deploy_path/storage/framework/cache" \
+            "$deploy_path/storage/framework/cache/data" \
             "$deploy_path/storage/framework/sessions" \
             "$deploy_path/storage/framework/views" \
             "$deploy_path/storage/logs" \
@@ -100,6 +147,11 @@ jobs:
           chmod -R u+rwX \
             "$deploy_path/storage" \
             "$deploy_path/bootstrap/cache"
+
+          if [ ! -f "$deploy_path/.env" ]; then
+            echo "Production .env is missing: $deploy_path/.env"
+            exit 1
+          fi
 
           if [ -f "$deploy_path/artisan" ]; then
             cd "$deploy_path"
@@ -114,7 +166,10 @@ jobs:
           IONOS_USER: ${{ secrets.IONOS_USER }}
           DEPLOY_PATH: ${{ secrets.IONOS_DEPLOY_PATH }}
         run: |
-          rsync -az --delete-delay \
+          rsync \
+            --archive \
+            --compress \
+            --delete-delay \
             --exclude='.env' \
             --exclude='.git/' \
             --exclude='.github/' \
@@ -122,6 +177,7 @@ jobs:
             --exclude='tests/' \
             --exclude='storage/' \
             --exclude='public/storage' \
+            --exclude='database/database.sqlite' \
             ./ "$IONOS_USER@$IONOS_HOST:$DEPLOY_PATH/"
 
       - name: Finalize deployment
@@ -132,29 +188,53 @@ jobs:
           DEPLOY_PATH: ${{ secrets.IONOS_DEPLOY_PATH }}
           PHP_BIN: ${{ vars.IONOS_PHP_BIN }}
         run: |
-          ssh "$IONOS_USER@$IONOS_HOST" \
+          ssh \
+            "$IONOS_USER@$IONOS_HOST" \
             bash -s -- "$DEPLOY_PATH" "$PHP_BIN" <<'REMOTE'
           set -e
+
           deploy_path="$1"
           php_bin="$2"
 
           cd "$deploy_path"
 
+          test -f artisan
+          test -f .env
+
+          "$php_bin" artisan config:clear
           "$php_bin" artisan migrate --force
-          "$php_bin" artisan storage:link || true
+          "$php_bin" artisan storage:link
           "$php_bin" artisan optimize
           "$php_bin" artisan up
+          "$php_bin" artisan about --only=environment
           REMOTE
 
-      - name: Restore application after failed deployment
-        if: failure() && github.event_name == 'push'
+      - name: Run production healthcheck
+        if: github.event_name == 'push'
+        env:
+          PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+        run: |
+          test -n "$PRODUCTION_URL"
+
+          curl \
+            --fail \
+            --show-error \
+            --silent \
+            --retry 3 \
+            --retry-delay 5 \
+            "${PRODUCTION_URL%/}/up"
+
+      - name: Restore application after deployment failure
+        if: ${{ failure() && github.event_name == 'push' }}
+        continue-on-error: true
         env:
           IONOS_HOST: ${{ secrets.IONOS_HOST }}
           IONOS_USER: ${{ secrets.IONOS_USER }}
           DEPLOY_PATH: ${{ secrets.IONOS_DEPLOY_PATH }}
           PHP_BIN: ${{ vars.IONOS_PHP_BIN }}
         run: |
-          ssh "$IONOS_USER@$IONOS_HOST" \
+          ssh \
+            "$IONOS_USER@$IONOS_HOST" \
             bash -s -- "$DEPLOY_PATH" "$PHP_BIN" <<'REMOTE'
           deploy_path="$1"
           php_bin="$2"
@@ -164,16 +244,3 @@ jobs:
             "$php_bin" artisan up || true
           fi
           REMOTE
-
-      - name: Healthcheck
-        if: github.event_name == 'push'
-        env:
-          PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
-        run: |
-          curl \
-            --fail \
-            --show-error \
-            --silent \
-            --retry 3 \
-            --retry-delay 5 \
-            "$PRODUCTION_URL/up"
