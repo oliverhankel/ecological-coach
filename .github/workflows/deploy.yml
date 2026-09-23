@@ -109,11 +109,6 @@ jobs:
           ssh-keygen -y \
             -f ~/.ssh/id_ed25519 \
             >/dev/null
-          echo "CI deployment key fingerprint:"
-
-           ssh-keygen -y \
-            -f ~/.ssh/id_ed25519 |
-            ssh-keygen -lf -
 
           ssh-keygen \
             -F "$IONOS_HOST" \
