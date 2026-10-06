@@ -1,18 +1,22 @@
 <x-layouts::app :title="__('Dashboard')">
-    <div class="flex h-full w-full flex-1 flex-col gap-4 rounded-xl">
-        <div class="grid auto-rows-min gap-4 md:grid-cols-3">
-            <div class="relative aspect-video overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
-                <x-placeholder-pattern class="absolute inset-0 size-full stroke-gray-900/20 dark:stroke-neutral-100/20" />
+    <div class="flex flex-col gap-6">
+        <div class="flex flex-wrap items-center justify-between gap-4">
+            <div>
+                <flux:heading size="xl">{{ __('Your teams') }}</flux:heading>
+                <flux:text>{{ __('Teams you are responsible for.') }}</flux:text>
             </div>
-            <div class="relative aspect-video overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
-                <x-placeholder-pattern class="absolute inset-0 size-full stroke-gray-900/20 dark:stroke-neutral-100/20" />
-            </div>
-            <div class="relative aspect-video overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
-                <x-placeholder-pattern class="absolute inset-0 size-full stroke-gray-900/20 dark:stroke-neutral-100/20" />
-            </div>
+
+            <flux:button variant="primary" :href="route('teams.create')" wire:navigate>
+                {{ __('Create team') }}
+            </flux:button>
         </div>
-        <div class="relative h-full flex-1 overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
-            <x-placeholder-pattern class="absolute inset-0 size-full stroke-gray-900/20 dark:stroke-neutral-100/20" />
+
+        <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            @foreach ($teams as $team)
+                <a href="{{ route('teams.show', $team) }}" wire:navigate class="rounded-xl border border-zinc-200 p-5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+                    <flux:heading size="lg">{{ $team->name }}</flux:heading>
+                </a>
+            @endforeach
         </div>
     </div>
 </x-layouts::app>
